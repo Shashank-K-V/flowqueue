@@ -77,7 +77,7 @@
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/flowqueue.git
+git clone https://github.com/Shashank-K-V//flowqueue.git
 cd flowqueue
 cp .env.example .env   # defaults work for local Docker
 ```
