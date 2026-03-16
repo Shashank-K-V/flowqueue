@@ -1,6 +1,6 @@
 # FlowQueue
 
-[![CI](https://github.com/YOUR_USERNAME/flowqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/flowqueue/actions/workflows/ci.yml)
+[![CI](https://github.com/Shashank-K-V//flowqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/Shashank-K-V//flowqueue/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)
