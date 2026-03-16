@@ -1,0 +1,37 @@
+# ── Dockerfile.worker — FlowQueue background worker ───────────────────────────
+#
+# Shares the same base image and venv approach as the API Dockerfile.
+# The only difference is the CMD: we launch processor.py instead of uvicorn.
+
+# ── Stage 1: builder ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN pip install --upgrade pip
+
+COPY requirements.txt .
+RUN python -m venv /build/venv && \
+    /build/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+
+WORKDIR /app
+
+COPY --from=builder /build/venv /app/venv
+
+# Copy both app (shared library) and worker source
+COPY app/ ./app/
+COPY worker/ ./worker/
+
+ENV PATH="/app/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# The worker has no HTTP port to expose
+USER appuser
+
+CMD ["python", "worker/processor.py"]

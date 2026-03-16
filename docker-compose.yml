@@ -1,0 +1,81 @@
+# ── docker-compose.yml ────────────────────────────────────────────────────────
+#
+# Brings up three services:
+#   redis   — official Redis 7 image (no persistence needed for dev)
+#   api     — FlowQueue FastAPI server
+#   worker  — FlowQueue BLPOP consumer
+#
+# Usage:
+#   docker compose up --build          # first run
+#   docker compose up --build --scale worker=3   # run 3 workers in parallel
+#   docker compose down                # tear down
+#
+# All services share the 'flowqueue' network; only the API port (8000) is
+# exposed to the host machine.
+
+version: "3.9"
+
+services:
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: flowqueue-redis
+    restart: unless-stopped
+    # Expose Redis port to host for debugging (redis-cli, RedisInsight, etc.)
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flowqueue
+
+  # ── API ─────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowqueue-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override REDIS_URL to point to the redis service on the internal network
+      REDIS_URL: redis://redis:6379/0
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - flowqueue
+
+  # ── Worker ──────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: flowqueue-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - flowqueue
+    # Scale workers with: docker compose up --scale worker=N
+    # Each container runs one processor.py loop; N containers = N parallel workers.
+
+networks:
+  flowqueue:
+    driver: bridge
