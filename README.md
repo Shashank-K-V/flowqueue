@@ -1,54 +1,27 @@
-# FlowQueue
+# FlowQueue ⚡
 
-[![CI](https://github.com/Shashank-K-V//flowqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/Shashank-K-V//flowqueue/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)
-![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker)
-![License](https://img.shields.io/badge/license-MIT-green)
+[![CI](https://github.com/Shashank-K-V/flowqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/Shashank-K-V/flowqueue/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![GCP](https://img.shields.io/badge/GCP-Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)
 
-**FlowQueue** is a horizontally scalable, distributed async task processing engine. Submit jobs via a REST API, have one or more stateless worker processes consume them from Redis, and poll for results — all wired together with Docker Compose and deployable to Google Cloud Run for free.
+A distributed asynchronous task queue engine built with FastAPI and Redis. Decouples task submission from execution — clients enqueue jobs via REST, stateless workers consume them from Redis using `BLPOP`, and results are tracked in TTL-managed Redis hashes. Containerized with Docker Compose for local development and deployable to GCP Cloud Run with a single command.
 
 ---
 
-## Architecture
+## Key Features
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                         Client                                 │
-│   POST /tasks  ──────────────────────────►  GET /tasks/{id}    │
-└──────────────────────┬──────────────────────────▲──────────────┘
-                       │                          │
-                       ▼                          │
-              ┌─────────────────┐                 │
-              │   FastAPI API   │  (Dockerfile)   │
-              │   (main.py)     │─────────────────┘
-              └────────┬────────┘
-                       │ LPUSH task_id
-                       ▼
-              ┌─────────────────┐
-              │      Redis      │  flowqueue:jobs  (list)
-              │   (job queue    │  flowqueue:job:<id>  (hash, TTL=1h)
-              │   + state store)│
-              └────────┬────────┘
-                       │ BLPOP task_id
-                       ▼
-         ┌─────────────────────────────┐
-         │   Worker  ×  N instances    │  (Dockerfile.worker)
-         │   (processor.py)            │
-         │                             │
-         │  • executes task handler    │
-         │  • updates job hash status  │
-         │  • retries on failure       │
-         └─────────────────────────────┘
-```
-
-**Data flow:**
-1. Client POSTs a task → API writes job hash to Redis + LPUSH task_id
-2. Worker BLPOPs task_id → reads payload hash → executes handler
-3. On success: HSET status=completed, result=<json>
-4. On failure (attempt < max): re-LPUSH task_id; on exhaustion: status=failed
-5. Client GETs /tasks/{id} → API reads hash → returns current state
+- **Async task submission** via a clean REST API (202 Accepted pattern)
+- **Redis-backed queue** using `LPUSH`/`BLPOP` for reliable job delivery
+- **Concurrent worker pool** — run `N` stateless workers with `--scale worker=N`
+- **Automatic retry logic** — configurable max attempts before marking a job `failed`
+- **TTL-managed state** — completed job hashes expire automatically (default: 1 hour)
+- **Status polling endpoint** — track `queued → processing → completed/failed` lifecycle
+- **Graceful shutdown** — workers finish in-flight jobs before exiting on `SIGTERM`
+- **Zero-dependency testing** — full pytest suite using `fakeredis` (no real Redis in CI)
+- **One-command local setup** via Docker Compose
 
 ---
 
@@ -56,14 +29,56 @@
 
 | Layer | Technology |
 |---|---|
-| API | FastAPI + Uvicorn |
-| Queue & State | Redis 7 (LPUSH / BLPOP / HSET) |
-| Worker | Python asyncio-free subprocess + BLPOP |
-| Config | pydantic-settings (env vars) |
-| Testing | pytest + fakeredis (no real Redis in CI) |
-| Containers | Docker + Docker Compose |
+| API Server | Python · FastAPI · Uvicorn |
+| Queue & State Store | Redis 7 (`LPUSH` / `BLPOP` / `HSET` / `EXPIRE`) |
+| Worker Runtime | Python subprocess · BLPOP event loop |
+| Configuration | `pydantic-settings` (12-factor env vars) |
+| Testing | `pytest` · `fakeredis` · `httpx` |
+| Containerization | Docker · Docker Compose |
 | CI | GitHub Actions |
-| Deployment | Google Cloud Run (free tier) |
+| Deployment | GCP Cloud Run (free tier) |
+
+---
+
+## Architecture
+
+```
+                        ┌─────────────────────────────────────────────┐
+                        │                   CLIENT                     │
+                        │  POST /tasks              GET /tasks/{id}    │
+                        └──────────┬────────────────────────▲──────────┘
+                                   │                        │
+                                   ▼                        │
+                        ┌─────────────────────┐             │
+                        │     FastAPI API      │─────────────┘
+                        │     (main.py)        │   reads job hash
+                        └──────────┬──────────┘
+                                   │ LPUSH task_id
+                                   ▼
+                        ┌─────────────────────┐
+                        │        Redis         │
+                        │  flowqueue:jobs      │  ← pending queue (list)
+                        │  flowqueue:job:<id>  │  ← job state (hash, TTL=1h)
+                        └──────────┬──────────┘
+                                   │ BLPOP task_id
+                                   ▼
+                  ┌────────────────────────────────────┐
+                  │         Worker Pool  (×N)           │
+                  │         (processor.py)              │
+                  │                                     │
+                  │  1. dequeue task_id via BLPOP        │
+                  │  2. mark status = processing         │
+                  │  3. execute task handler             │
+                  │  4a. success → status = completed    │
+                  │  4b. failure → retry or → failed     │
+                  └────────────────────────────────────┘
+```
+
+**Request lifecycle:**
+
+```
+Client → POST /tasks → [Redis Queue] → Worker → [Redis Hash] → Client polls GET /tasks/{id}
+```
 
 ---
 
@@ -71,42 +86,39 @@
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Compose)
-- Python 3.11+ (only needed if running tests outside Docker)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Compose v2)
 
-### 1. Clone and configure
+### Run
 
 ```bash
-git clone https://github.com/Shashank-K-V//flowqueue.git
+git clone https://github.com/Shashank-K-V/flowqueue.git
 cd flowqueue
-cp .env.example .env   # defaults work for local Docker
-```
-
-### 2. Start everything
-
-```bash
+cp .env.example .env
 docker compose up --build
 ```
 
 This starts three containers:
-- `flowqueue-redis` on `localhost:6379`
-- `flowqueue-api` on `localhost:8000`
-- `flowqueue-worker` (no exposed port)
 
-### 3. Verify
+| Container | Role | Port |
+|---|---|---|
+| `flowqueue-redis` | Job queue + state store | `6379` |
+| `flowqueue-api` | FastAPI REST server | `8000` |
+| `flowqueue-worker` | BLPOP consumer | — |
+
+Verify the stack is healthy:
 
 ```bash
 curl http://localhost:8000/health
 # {"status":"ok","redis":"ok"}
 ```
 
-Open **http://localhost:8000/docs** for the interactive Swagger UI.
+Swagger UI: **http://localhost:8000/docs**
 
 ---
 
 ## API Reference
 
-### POST /tasks — Enqueue a task
+### `POST /tasks` — Submit a task
 
 ```bash
 curl -X POST http://localhost:8000/tasks \
@@ -114,7 +126,6 @@ curl -X POST http://localhost:8000/tasks \
   -d '{"task_type": "word_count", "payload": {"text": "the quick brown fox"}}'
 ```
 
-**Response (202 Accepted)**
 ```json
 {
   "task_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
@@ -123,27 +134,22 @@ curl -X POST http://localhost:8000/tasks \
 }
 ```
 
+Returns **202 Accepted**. The task has been accepted for processing, not yet executed.
+
 ---
 
-### GET /tasks/{task_id} — Poll for status
+### `GET /tasks/{task_id}` — Poll task status
 
 ```bash
 curl http://localhost:8000/tasks/f47ac10b-58cc-4372-a567-0e02b2c3d479
 ```
 
-**Response — still queued**
+**Processing:**
 ```json
-{
-  "task_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "task_type": "word_count",
-  "status": "queued",
-  "attempts": 0,
-  "result": null,
-  "error": null
-}
+{"task_id": "f47ac10b...", "task_type": "word_count", "status": "processing", "attempts": 1, "result": null, "error": null}
 ```
 
-**Response — completed**
+**Completed:**
 ```json
 {
   "task_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
@@ -160,137 +166,131 @@ curl http://localhost:8000/tasks/f47ac10b-58cc-4372-a567-0e02b2c3d479
 }
 ```
 
-**Response — failed (all retries exhausted)**
+**Failed (retries exhausted):**
 ```json
-{
-  "task_id": "...",
-  "task_type": "word_count",
-  "status": "failed",
-  "attempts": 3,
-  "result": null,
-  "error": "'text' must be a string, got int"
-}
+{"task_id": "...", "status": "failed", "attempts": 3, "result": null, "error": "'text' must be a string, got int"}
 ```
 
-**404** is returned if `task_id` is unknown or has expired (TTL elapsed).
+Returns **404** if `task_id` is unknown or has expired (TTL elapsed).
 
 ---
 
-### GET /health — Health probe
+### `GET /health` — Liveness probe
 
 ```bash
 curl http://localhost:8000/health
+# 200 → {"status": "ok",       "redis": "ok"}
+# 503 → {"status": "degraded", "redis": "error"}
 ```
 
-```json
-{"status": "ok", "redis": "ok"}
-```
-
-Returns **503** if Redis is unreachable.
+Used by Cloud Run and load balancers for health-gating.
 
 ---
 
-## Job Status State Machine
+## Job State Machine
 
 ```
-                POST /tasks
-                    │
-                    ▼
-                 queued
-                    │
-          worker picks up
-                    │
-                    ▼
-              processing
-               │       │
-           success   failure
-               │       │
-               │       ├── attempt < max_retries ──► queued (re-queued)
-               │       │
-               │       └── attempts == max_retries ──► failed
-               │
-               ▼
-           completed
+POST /tasks
+     │
+     ▼
+  queued ──────────────── worker picks up
+                                │
+                                ▼
+                           processing
+                            │       │
+                        success   exception
+                            │       │
+                            │       ├── attempt < max_retries ──► re-queued
+                            │       └── attempts == max_retries ──► failed
+                            ▼
+                        completed
 ```
 
 ---
 
 ## Running Tests
 
-Tests use **fakeredis** — no Redis server needed.
+Tests use `fakeredis` — no Redis server or Docker required.
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
-# Run all tests
+# Full suite
 pytest tests/ -v
 
-# Run with coverage report
+# With coverage
 pytest tests/ --cov=app --cov=worker --cov-report=term-missing
 
-# Run a specific test file
+# Single module
 pytest tests/test_worker.py -v
 ```
+
+Test coverage includes: API endpoint flows, queue enqueue/dequeue behavior, worker retry logic, failure exhaustion, and TTL refresh.
 
 ---
 
 ## Configuration
 
-All settings are read from environment variables (or `.env`):
+All values are read from environment variables or `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
-| `QUEUE_KEY` | `flowqueue:jobs` | Redis list key for pending jobs |
-| `JOB_HASH_PREFIX` | `flowqueue:job:` | Prefix for job state hashes |
-| `MAX_RETRIES` | `3` | Max worker attempts per job |
-| `BLPOP_TIMEOUT` | `5` | Seconds worker blocks on empty queue |
-| `TTL_SECONDS` | `3600` | Job hash TTL (seconds) after completion |
+| `QUEUE_KEY` | `flowqueue:jobs` | Redis list key for the job queue |
+| `JOB_HASH_PREFIX` | `flowqueue:job:` | Key prefix for job state hashes |
+| `MAX_RETRIES` | `3` | Max worker attempts before marking failed |
+| `BLPOP_TIMEOUT` | `5` | Seconds to block on an empty queue |
+| `TTL_SECONDS` | `3600` | Job hash TTL after last state change |
 | `API_PORT` | `8000` | Uvicorn listen port |
-| `LOG_LEVEL` | `info` | Uvicorn / logging level |
+| `LOG_LEVEL` | `info` | Log verbosity |
 
 ---
 
-## Horizontal Scaling
+## Scalability
 
-FlowQueue is designed to scale workers horizontally with zero code changes:
+Workers are **stateless** — they hold no in-process state between jobs. All shared state lives exclusively in Redis hashes keyed by `task_id`.
 
 ```bash
-# Run 5 workers in parallel consuming from the same queue
+# Scale to 5 parallel workers consuming from the same queue
 docker compose up --scale worker=5
 ```
 
-**Why it's safe:**
-- Each `BLPOP` pops exactly one `task_id` — two workers never pick up the same job.
-- Workers hold no in-process state; all state lives in Redis hashes.
-- The API is also stateless: scale with `--scale api=N` behind a load balancer.
-- On Cloud Run, set `--min-instances` and `--max-instances` for auto-scaling.
+**Why this is safe:**
+- `BLPOP` is atomic — two workers never dequeue the same `task_id` from the same enqueue event.
+- Redis is the single source of truth; worker processes are interchangeable.
+- The API is also stateless and can be scaled behind any load balancer.
+- On Cloud Run, set `--min-instances` / `--max-instances` for demand-driven auto-scaling.
 
 ---
 
-## Deployment — Google Cloud Run (Free Tier)
+## Deployment — GCP Cloud Run
 
-> Free tier: **2 million requests/month**, 360,000 GB-seconds of compute, always free.
+> Free tier: **2 million requests/month** · 360,000 vCPU-seconds · 180,000 GB-seconds.
 
-See [DEPLOY.md](DEPLOY.md) for full step-by-step instructions.
-
-**Quick summary:**
+See [DEPLOY.md](DEPLOY.md) for the full step-by-step walkthrough.
 
 ```bash
-# 1. Build and push the API image
-gcloud builds submit --tag gcr.io/PROJECT_ID/flowqueue-api
+# Build and push API image to Container Registry
+gcloud builds submit --tag gcr.io/$PROJECT_ID/flowqueue-api
 
-# 2. Deploy to Cloud Run
+# Deploy API to Cloud Run
 gcloud run deploy flowqueue-api \
-  --image gcr.io/PROJECT_ID/flowqueue-api \
+  --image gcr.io/$PROJECT_ID/flowqueue-api \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
   --set-env-vars REDIS_URL=rediss://:PASSWORD@HOST:PORT/0
+
+# Deploy worker as a separate Cloud Run service
+gcloud run deploy flowqueue-worker \
+  --image gcr.io/$PROJECT_ID/flowqueue-worker \
+  --platform managed \
+  --region us-central1 \
+  --no-allow-unauthenticated \
+  --set-env-vars REDIS_URL=rediss://:PASSWORD@HOST:PORT/0
 ```
 
-The worker is deployed as a separate Cloud Run **Job** (or a second service with `--no-allow-unauthenticated`).
+Use [Upstash Redis](https://upstash.com/) (free tier) for the managed Redis instance on Cloud Run.
 
 ---
 
@@ -299,26 +299,27 @@ The worker is deployed as a separate Cloud Run **Job** (or a second service with
 ```
 flowqueue/
 ├── app/
-│   ├── main.py          # FastAPI app and routes
-│   ├── models.py        # Pydantic request/response schemas
-│   ├── queue.py         # Redis enqueue/dequeue/state logic
-│   ├── config.py        # Centralised settings (pydantic-settings)
-│   └── dependencies.py  # FastAPI Depends() helpers
+│   ├── main.py           # FastAPI app, routes
+│   ├── models.py         # Pydantic request/response schemas
+│   ├── queue.py          # Redis enqueue/dequeue/state logic
+│   ├── config.py         # Centralised settings (pydantic-settings)
+│   └── dependencies.py   # FastAPI Depends() helpers
 ├── worker/
-│   └── processor.py     # BLPOP consumer with retry logic
+│   └── processor.py      # BLPOP consumer, retry logic, task handlers
 ├── tests/
-│   ├── conftest.py      # Shared fixtures (fakeredis, TestClient)
-│   ├── test_api.py      # HTTP endpoint tests
-│   ├── test_queue.py    # Redis queue unit tests
-│   └── test_worker.py   # Worker retry / failure tests
+│   ├── conftest.py       # Shared fixtures (fakeredis, TestClient)
+│   ├── test_api.py       # HTTP endpoint tests
+│   ├── test_queue.py     # Queue unit tests
+│   └── test_worker.py    # Worker retry and failure tests
 ├── .github/
 │   └── workflows/
-│       └── ci.yml       # GitHub Actions: pytest on every push
-├── docker-compose.yml   # Wires API + worker + Redis
-├── Dockerfile           # API image (multi-stage)
-├── Dockerfile.worker    # Worker image (multi-stage)
+│       └── ci.yml        # GitHub Actions — pytest on every push
+├── docker-compose.yml    # Local orchestration (API + worker + Redis)
+├── Dockerfile            # API image
+├── Dockerfile.worker     # Worker image
 ├── requirements.txt
 ├── .env.example
+├── DEPLOY.md             # Full GCP Cloud Run deployment guide
 └── README.md
 ```
 
